@@ -1,0 +1,208 @@
+import face_recognition 
+import os, sys
+import cv2
+import numpy as np
+import math
+from gpiozero import Button
+from gpiozero import LED
+from gpiozero import Buzzer
+from time import sleep
+
+scanB = Button(4)
+quitB = Button(17)
+picB = Button(6)
+ledG = LED(20)
+ledR = LED(18)
+buzzer = Buzzer(25)
+
+def face_confidence(face_distance, face_match_threshold=0.6):
+    range = (1.0 - face_match_threshold)
+    linear_val = (1.0 - face_distance) / (range * 2.0)
+
+    if face_distance > face_match_threshold:
+        return str(round(linear_val * 100, 2)) + '%'
+    else:
+        # Following is used to determine the percentage accuracy of someone's face
+        value = (linear_val + ((1.0 - linear_val) * math.pow((linear_val - 0.5) * 2, 0.2))) * 100
+        return str(round(value, 2)) + '%'
+    
+def l_and_b_on():
+    ledG.on()
+    buzzer.on()
+    sleep(1)
+    ledG.off()
+    buzzer.off()
+    
+def l_and_b_off():
+    ledR.on()
+    buzzer.on()
+    sleep(1)
+    ledR.off()
+    buzzer.off()
+    
+def doorCam():
+    flag0 = 0
+    flag1 = 0
+    flag2 = 0
+    
+    while flag0 == 0 :
+        if scanB.is_pressed:
+            flag1+=1
+        if flag1 == 1:
+            fr = FaceRecognition()
+            fr.run_recognition()        
+            if authorized == True:
+                l_and_b_on()
+                flag1-=1
+            else:
+                l_and_b_off()
+                flag1-=1
+
+        if picB.is_pressed:
+            flag2+=1
+            while flag2 == 1:
+                if authorized == True:
+                    takePic()
+                    flag2-=1
+                else:
+                    print('Apologies, you are not an authorized user')
+                    flag2-=1
+
+     
+        if quitB.is_pressed:
+            flag0+=1
+            
+def takePic():
+    print('Please center your face on the screen before taking photo')
+    cam = cv2.VideoCapture(0)
+
+    cv2.namedWindow("New User")
+
+    path = 'faces'
+    while True:
+        ret, frame = cam.read()
+        if not ret:
+            print("failed to grab frame")
+            break
+        cv2.imshow("New User", frame)
+
+        if quitB.is_pressed:
+            print("Escape hit, closing...")
+            break
+        if picB.is_pressed:
+            img_name = input('Name of new user (please end with .png, EX: Joel.png)')
+            cv2.imwrite(os.path.join(path, img_name), frame)
+            print("{} written!".format(img_name))
+            break
+        
+#       Ensure camera does not close 
+        k = cv2.waitKey(1)
+
+    cam.release()
+    cv2.destroyAllWindows()
+
+
+class FaceRecognition:
+    face_locations = []
+    face_encodings = []
+    face_names = []
+    known_face_encodings = []
+    known_face_names = []
+    process_current_frame = True
+
+    def __init__(self):
+        self.encode_faces()
+        # encode faces
+    
+    def encode_faces(self):
+        for image in os.listdir('faces'):
+            face_image = face_recognition.load_image_file(f'faces/{image}')
+            face_encoding = face_recognition.face_encodings(face_image)[0]
+
+            self.known_face_encodings.append(face_encoding)
+            self.known_face_names.append(image)
+
+    #using connected cameera to operate
+    def run_recognition(self):
+        N = 0
+        M = 0
+        global authorized
+        authorized = False
+        global confidence
+        confidence =''
+        global faceM
+        faceM = False
+        
+        video_capture = cv2.VideoCapture(0)
+    
+        #if the camera is not found, system fail
+        if not video_capture.isOpened():
+            sys.exit('Source not found')
+
+        while True:
+            ret, frame = video_capture.read()
+            
+            if self.process_current_frame:
+                small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
+                #changegs small from into rgb
+                rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
+
+                #find all faces in the current frame
+                self.face_locations = face_recognition.face_locations(rgb_small_frame)
+                self.face_encodings = face_recognition.face_encodings(rgb_small_frame, self.face_locations)
+
+                self.face_names = []
+                for face_encoding in self.face_encodings:
+                    matches = face_recognition.compare_faces(self.known_face_encodings, face_encoding)
+                    name = 'Unknown'
+                    confidence = 'Unknown'
+
+                    face_distances = face_recognition.face_distance(self.known_face_encodings, face_encoding)
+                    best_match_index = np.argmin(face_distances)
+
+                    # Takes care of giving recognistion labels
+                    if matches[best_match_index]:
+                        faceM = True
+                        name = self.known_face_names[best_match_index]
+                        confidence = face_confidence(face_distances[best_match_index])
+
+                    self.face_names.append(f'{name} ({confidence})')
+
+            # Used to make program only process every other frame (saves resources)
+            self.process_current_frame = not self.process_current_frame
+
+            #Display annotation
+            for (top, right, bottom, left), name in zip(self.face_locations, self.face_names):
+                top *= 4
+                right *= 4
+                bottom *= 4
+                left *= 4
+                
+                cv2.rectangle(frame, (left, top), (right, bottom), (0, 0, 255), 2)
+                cv2.rectangle(frame, (left, bottom - 35), (right, bottom), (0, 0, 255), -1)
+                cv2.putText(frame, name, (left + 6, bottom - 6), cv2.FONT_HERSHEY_DUPLEX, 0.8, (255, 255, 255), 1)
+
+            cv2.imshow('Face Recognition', frame)
+
+             # confirms that an accepted user is in frame 
+            if confidence >= '95' and faceM == True:
+                N += 1
+                if N>20:
+                    print(f'Welcome {self.known_face_names}')
+                    authorized = True
+                    break
+            else:
+                M += 1
+                if M>50:
+                    print('You are not a recognized user, please try again')
+                    break
+                
+            if cv2.waitKey(1) == ord('q'):
+                break
+        video_capture.release()
+        cv2.destroyAllWindows()
+
+if __name__ == '__main__':
+    print('Progam Ready...')
+    authorized = False
+    doorCam()
